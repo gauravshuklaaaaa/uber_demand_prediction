@@ -6,3 +6,4 @@ streamlit
 dagshub
 mlflow
 pydeck
+protobuf
