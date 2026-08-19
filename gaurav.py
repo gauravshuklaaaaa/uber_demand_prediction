@@ -4,6 +4,7 @@ from pathlib import Path
 import dagshub
 import joblib
 import mlflow
+import numpy as np
 import pandas as pd
 import pydeck as pdk
 import streamlit as st
@@ -19,7 +20,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Custom High-End Styling
+# Custom Styling
 st.markdown(
     """
     <style>
@@ -36,41 +37,6 @@ st.markdown(
     .stMetric label {
         color: #A0AAB0 !important;
         font-weight: 600;
-    }
-    .legend-box {
-        background: rgba(18, 18, 18, 0.85);
-        border: 1px solid rgba(255, 255, 255, 0.15);
-        border-radius: 10px;
-        padding: 12px 16px;
-        font-size: 13px;
-        max-height: 380px;
-        overflow-y: auto;
-    }
-    .legend-item {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        margin-bottom: 8px;
-        padding-bottom: 4px;
-        border-bottom: 1px solid rgba(255,255,255,0.05);
-    }
-    .legend-left {
-        display: flex;
-        align-items: center;
-    }
-    .color-dot {
-        width: 14px;
-        height: 14px;
-        border-radius: 50%;
-        margin-right: 10px;
-        display: inline-block;
-    }
-    .pickup-badge {
-        background: rgba(255, 75, 75, 0.2);
-        color: #FF8080;
-        padding: 2px 8px;
-        border-radius: 6px;
-        font-weight: bold;
     }
     .stButton>button {
         border-radius: 8px;
@@ -128,13 +94,14 @@ def load_datasets():
     return df_p, df_t
 
 
+# Initialize loaded artifacts
 model = load_final_model()
 scaler = joblib.load(scaler_path)
 encoder = joblib.load(encoder_path)
 kmeans = joblib.load(kmeans_path)
 df_plot, df = load_datasets()
 
-# 5. Hex/RGB Colors mapping
+# 5. Hex/RGB Colors mapping for PyDeck & UI Legends
 COLOR_PALETTE = [
     [255, 0, 0],
     [255, 69, 0],
@@ -162,6 +129,13 @@ df_plot["color_hex"] = df_plot["color_rgb"].apply(
     lambda rgb: f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}"
 )
 
+# Reliable Built-in PyDeck Map Themes (No Mapbox Token Required)
+THEME_MAP = {
+    "🌙 Dark Mode": pdk.map_styles.CARTO_DARK,
+    "☀️ Light Mode": pdk.map_styles.CARTO_LIGHT,
+    "🗺️ Road View": pdk.map_styles.ROAD,
+}
+
 # 6. Sidebar Controls
 with st.sidebar:
     st.image(
@@ -177,10 +151,11 @@ with st.sidebar:
         help="Select localized top-neighbor view or full spatial distribution.",
     )
 
-    map_style = st.selectbox(
+    theme_label = st.selectbox(
         "🎨 Map Theme",
-        ["mapbox://styles/mapbox/dark-v10", "mapbox://styles/mapbox/light-v10"],
+        list(THEME_MAP.keys()),
     )
+    map_style = THEME_MAP[theme_label]
 
     st.markdown("---")
     st.caption("🚀 **Deployment Status:** MLflow & DagsHub Active")
@@ -219,7 +194,7 @@ if date_val and time_val:
             f"ℹ️ Nearest Timestamp Matched: **{matched_ts.strftime('%Y-%m-%d %I:%M %p')}**"
         )
 
-    # Driver / Sample Location Selection
+    # Current Driver Location Selection
     sample = df_plot.sample(1, random_state=42).reset_index(drop=True)
     curr_lat, curr_lon, curr_reg = (
         sample["pickup_latitude"].item(),
@@ -247,7 +222,7 @@ if date_val and time_val:
         )
         input_data = input_data[
             input_data["region"].isin(neighbor_indices)
-        ].sort_values("region")
+        ]
     else:
         display_df = df_plot.copy()
         input_data = (
@@ -255,7 +230,6 @@ if date_val and time_val:
             if isinstance(df.loc[matched_ts], pd.Series)
             else df.loc[matched_ts]
         )
-        input_data = input_data.sort_values("region")
 
     # Perform Inference
     if not input_data.empty:
@@ -265,37 +239,32 @@ if date_val and time_val:
         input_data["predicted_pickups"] = [
             int(max(0, p)) for p in raw_preds
         ]
+        
+        # Calculate Proximity (Distance to Driver) & Sort: Nearness First, Max Rides Second
+        region_coords = df_plot.groupby("region")[["pickup_latitude", "pickup_longitude"]].mean().reset_index()
+        input_data = input_data.merge(region_coords, on="region", how="left")
+        
+        input_data["dist_to_driver"] = np.sqrt(
+            (input_data["pickup_latitude"] - curr_lat)**2 +
+            (input_data["pickup_longitude"] - curr_lon)**2
+        )
+        
+        input_data = input_data.sort_values(
+            by=["dist_to_driver", "predicted_pickups"],
+            ascending=[True, False]
+        ).reset_index(drop=True)
     else:
         input_data["predicted_pickups"] = []
 
-    # Map Drivers Current Location Highlight Layer
-    driver_df = pd.DataFrame([{
-        "latitude": curr_lat,
-        "longitude": curr_lon,
-        "region": curr_reg
-    }])
-
-    driver_layer = pdk.Layer(
-        "ScatterplotLayer",
-        data=driver_df,
-        get_position=["longitude", "latitude"],
-        get_color=[255, 255, 255],  # White color dot for driver
-        get_radius=150,
-        pickable=True,
-        stroked=True,
-        get_line_color=[0, 0, 0],
-        get_line_width=3,
-        filled=True,
-    )
-
-    regions_layer = pdk.Layer(
+    # Cluster Points Layer
+    cluster_layer = pdk.Layer(
         "ScatterplotLayer",
         data=display_df,
         get_position=["pickup_longitude", "pickup_latitude"],
         get_color="color_rgb",
         get_radius=80 if map_view == "Neighborhood Clusters" else 40,
         pickable=True,
-        opacity=0.8,
+        opacity=0.7,
         stroked=True,
         filled=True,
         radius_scale=1,
@@ -303,20 +272,43 @@ if date_val and time_val:
         radius_max_pixels=15,
     )
 
+    # Dedicated Current Location Pin Layer (Glowing Neon Marker)
+    driver_df = pd.DataFrame([{
+        "pickup_latitude": curr_lat,
+        "pickup_longitude": curr_lon,
+        "label": f"Driver Location (Region {curr_reg})"
+    }])
+    
+    driver_pin_layer = pdk.Layer(
+        "ScatterplotLayer",
+        data=driver_df,
+        get_position=["pickup_longitude", "pickup_latitude"],
+        get_color=[255, 0, 128, 255], # Bright Pink/Magenta Pin
+        get_radius=200 if map_view == "Neighborhood Clusters" else 400,
+        pickable=True,
+        stroked=True,
+        get_line_color=[255, 255, 255],
+        get_line_width=15,
+        radius_min_pixels=8,
+        radius_max_pixels=20,
+    )
+
+    # View State with Min/Max Zoom Constraints
     view_state = pdk.ViewState(
         latitude=curr_lat,
         longitude=curr_lon,
-        zoom=12 if map_view == "Neighborhood Clusters" else 10,
+        zoom=11.5 if map_view == "Neighborhood Clusters" else 10.2,
+        min_zoom=9.5,
+        max_zoom=13.5,
         pitch=30,
     )
 
-    # Layout Split: Left (PyDeck Map) | Right (Driver Info & Unified Legend/Predictions)
-    col_map, col_info = st.columns([2.5, 1])
+    col_map, col_info = st.columns([3, 1])
 
     with col_map:
-        st.subheader("🗺️ Geospatial Map")
+        st.subheader("🗺️ Interactive Geospatial Map")
         r = pdk.Deck(
-            layers=[regions_layer, driver_layer],
+            layers=[cluster_layer, driver_pin_layer],
             initial_view_state=view_state,
             map_style=map_style,
             tooltip={
@@ -331,47 +323,21 @@ if date_val and time_val:
         st.pydeck_chart(r)
 
     with col_info:
-        # Driver's Current Location Section
-        st.subheader("📍 Driver Current Status")
-        st.success(f"**Current Region:** Region {curr_reg}")
+        st.subheader("📍 Current Location")
+        st.metric(label="Current Region", value=f"Region {curr_reg}")
         st.caption(f"Lat: `{curr_lat:.4f}` | Lon: `{curr_lon:.4f}`")
+        st.markdown("🩷 **Magenta Pin** = Driver Location")
 
-        st.markdown("---")
-        st.subheader("🎨 Region Demand & Legend")
-
-        # Unified Legend + Prediction Table Block
-        if not input_data.empty:
-            preds_map = dict(zip(input_data["region"], input_data["predicted_pickups"]))
-            active_regions = sorted(display_df["region"].unique())
-            
-            legend_html = "<div class='legend-box'>"
-            for reg in active_regions:
-                hex_c = display_df[display_df["region"] == reg]["color_hex"].iloc[0]
-                p_val = preds_map.get(reg, 0)
-                is_driver = " (Driver Location)" if reg == curr_reg else ""
-
-                legend_html += f"""
-                <div class='legend-item'>
-                    <div class='legend-left'>
-                        <span class='color-dot' style='background-color: {hex_c};'></span>
-                        <span><b>Region {reg}</b>{is_driver}</span>
-                    </div>
-                    <span class='pickup-badge'>{p_val} rides</span>
-                </div>
-                """
-            legend_html += "</div>"
-            st.markdown(legend_html, unsafe_allow_html=True)
-
-    # 8. Detailed Insights & Metrics Dashboard
+    # 8. Detailed Demand Predictions & Metrics Dashboard
     st.markdown("---")
-    st.subheader("📊 Detailed Demand Insights")
+    st.subheader("📊 Predicted Demand Insights")
 
     if not input_data.empty:
         tot_demand = input_data["predicted_pickups"].sum()
         avg_demand = int(input_data["predicted_pickups"].mean())
-        max_region = input_data.loc[
-            input_data["predicted_pickups"].idxmax(), "region"
-        ]
+        
+        max_idx = input_data["predicted_pickups"].argmax()
+        max_region = int(input_data.iloc[max_idx]["region"])
 
         m1, m2, m3 = st.columns(3)
         m1.metric("Total NYC Predicted Pickups", f"{tot_demand:,} Rides")
@@ -380,6 +346,65 @@ if date_val and time_val:
 
         st.write(" ")
 
+        # Regional Metric Cards (Sorted by Nearness + Demand)
+        st.markdown("##### 📍 Region-wise Breakdown (Ordered by Proximity & Demand)")
+        region_cols = st.columns(3)
+        for idx, row in enumerate(input_data.iterrows()):
+            data = row[1]
+            r_id = int(data["region"])
+            p_val = int(data["predicted_pickups"])
+
+            color_row = display_df[display_df["region"] == r_id]
+            hex_c = color_row["color_hex"].iloc[0] if not color_row.empty else "#FF4B4B"
+
+            is_driver_region = (r_id == curr_reg)
+            is_high = p_val > avg_demand
+            
+            badge_text = "📍 Driver Region" if is_driver_region else ("↑ High Demand" if is_high else "↑ Normal Demand")
+            badge_color = "#FF0080" if is_driver_region else ("#00E676" if is_high else "#A0AAB0")
+
+            with region_cols[idx % 3]:
+                st.markdown(
+                    f"""
+                    <div style="
+                        background: rgba(255, 255, 255, 0.05);
+                        border: 1px solid rgba(255, 255, 255, 0.1);
+                        border-radius: 12px;
+                        padding: 15px 20px;
+                        margin-bottom: 15px;
+                        box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+                    ">
+                        <div style="display: flex; align-items: center; gap: 8px; font-size: 14px; color: #A0AAB0; font-weight: 600;">
+                            <span style="
+                                display: inline-block;
+                                width: 12px;
+                                height: 12px;
+                                background-color: {hex_c};
+                                border-radius: 3px;
+                            "></span>
+                            <span>Region {r_id}</span>
+                        </div>
+                        <div style="font-size: 26px; font-weight: 700; color: white; margin: 6px 0;">
+                            {p_val} Pickups
+                        </div>
+                        <div style="
+                            font-size: 12px;
+                            font-weight: 600;
+                            color: {badge_color};
+                            background: rgba(255, 255, 255, 0.05);
+                            display: inline-block;
+                            padding: 2px 8px;
+                            border-radius: 10px;
+                        ">
+                            {badge_text}
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+        # Bar Visual Chart & Download Trigger
+        st.markdown("---")
         c_chart, c_download = st.columns([3, 1])
 
         with c_chart:
