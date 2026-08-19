@@ -2,72 +2,59 @@ import logging
 from pathlib import Path
 import pandas as pd
 
-
-# create a logger
+# Create logger
 logger = logging.getLogger("feature_processing")
 logger.setLevel(logging.INFO)
 
-# attach a console handler
-handler = logging.StreamHandler()
-handler.setLevel(logging.INFO)
-logger.addHandler(handler)
-
-# make a formatter
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-handler.setFormatter(formatter)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
 
 if __name__ == "__main__":
-    # current path
     current_path = Path(__file__)
-    # set the root path
     root_path = current_path.parent.parent.parent
-    # data_path
     data_path = root_path / "data/processed/resampled_data.csv"
     
-    # read the data
+    # 1. Read data
     df = pd.read_csv(data_path, parse_dates=["tpep_pickup_datetime"])
     logger.info("Data read successfully")
     
-    # extract the day of week information
-    df["day_of_week"] = df["tpep_pickup_datetime"].dt.day_of_week
-    # extract the month information
-    df["month"] = df["tpep_pickup_datetime"].dt.month
-    logger.info("Datetime Features extracted successfully")
+    # 2. Sort data strictly by region and datetime BEFORE lag creation
+    df.sort_values(by=["region", "tpep_pickup_datetime"], inplace=True)
     
-    # set the datetime column as index
+    # 3. Extract Datetime features
+    df["day_of_week"] = df["tpep_pickup_datetime"].dt.day_of_week
+    df["month"] = df["tpep_pickup_datetime"].dt.month
+    logger.info("Datetime features extracted successfully")
+    
+    # 4. Generate Lag features safely (without indexing issues)
+    for p in range(1, 5):
+        df[f"lag_{p}"] = df.groupby("region")["total_pickups"].shift(p)
+    logger.info("Lag features generated successfully")
+    
+    # 5. Drop NaN rows created by shift()
+    df.dropna(inplace=True)
+    
+    # 6. Set datetime index AFTER lag creation
     df.set_index("tpep_pickup_datetime", inplace=True)
     logger.info("Datetime column set as index successfully")
     
-    # create the region grouper
-    region_grp = df.groupby("region")
-    # shifting periods
-    periods = list(range(1,5))
-    # generate the lag features
-    lag_features = region_grp["total_pickups"].shift(periods)
-    logger.info("Lag features generated successfully")
+    # 7. Explicit Feature Selection (Avoids relying on column order)
+    feature_cols = [f"lag_{i}" for i in range(1, 5)] + ["month", "day_of_week"]
     
-    # merge them with the original df
-    data = pd.concat([lag_features,df],axis=1)
-    logger.info("Lagged features merged successfully")
+    # Split train & test
+    trainset = df.loc[df["month"].isin([1, 2]), feature_cols]
+    testset = df.loc[df["month"].isin([3]), feature_cols]
     
-    # drop the missing values
-    data.dropna(inplace=True)
-    
-    # rename column names
-    mapper = {name:f"lag_{ind+1}" for ind, name in enumerate(data.columns[0:4])}
-    data = data.rename(columns=mapper)
-    logger.info("Column names renamed successfully")
-    # split the data into train and test
-    trainset = data.loc[data["month"].isin([1,2]),"lag_1":"day_of_week"]
+    # 8. Save output
+    train_save_path = root_path / "data/processed/train.csv"
+    test_save_path = root_path / "data/processed/test.csv"
 
-    testset = data.loc[data["month"].isin([3]),"lag_1":"day_of_week"]
-    
-    # save the train and test data
-    train_data_save_path = root_path / "data/processed/train.csv"
-    test_data_save_path = root_path / "data/processed/test.csv"
-
-    trainset.to_csv(train_data_save_path, index=True)
+    trainset.to_csv(train_save_path, index=True)
     logger.info("Train data saved successfully")
     
-    testset.to_csv(test_data_save_path, index=True)
+    testset.to_csv(test_save_path, index=True)
     logger.info("Test data saved successfully")
