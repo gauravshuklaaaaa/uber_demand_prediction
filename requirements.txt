@@ -6,4 +6,4 @@ streamlit
 dagshub
 mlflow==3.6.0
 pydeck
-protobuf
+protobuf==5.29.5
