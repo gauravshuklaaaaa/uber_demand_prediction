@@ -4,6 +4,6 @@ scikit-learn
 joblib
 streamlit
 dagshub
-mlflow
+mlflow==3.6.0
 pydeck
 protobuf
