@@ -1,4 +1,5 @@
 import datetime as dt
+import os
 from pathlib import Path
 
 import dagshub
@@ -59,8 +60,19 @@ REPO_OWNER = "gauravshuklaaaaa"
 REPO_NAME = "uber_demand_prediction"
 MODEL_NAME = "uber_demand_prediction_model"
 
-# 2. MLflow & DagsHub Setup
-dagshub.init(repo_owner=REPO_OWNER, repo_name=REPO_NAME, mlflow=True)
+# 2. MLflow & DagsHub Non-Interactive Setup
+dagshub_token = os.getenv("DAGSHUB_USER_TOKEN") or st.secrets.get("DAGSHUB_USER_TOKEN", None)
+
+if dagshub_token:
+    dagshub.auth.add_app_token(dagshub_token)
+    os.environ["MLFLOW_TRACKING_USERNAME"] = REPO_OWNER
+    os.environ["MLFLOW_TRACKING_PASSWORD"] = dagshub_token
+
+try:
+    dagshub.init(repo_owner=REPO_OWNER, repo_name=REPO_NAME, mlflow=True)
+except Exception as e:
+    st.sidebar.info("Running DagsHub in standalone mode")
+
 mlflow.set_tracking_uri(f"https://dagshub.com/{REPO_OWNER}/{REPO_NAME}.mlflow")
 
 # 3. Path Configurations
