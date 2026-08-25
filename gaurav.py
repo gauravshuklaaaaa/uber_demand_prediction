@@ -61,7 +61,14 @@ REPO_NAME = "uber_demand_prediction"
 MODEL_NAME = "uber_demand_prediction_model"
 
 # 2. MLflow & DagsHub Non-Interactive Setup
-dagshub_token = os.getenv("DAGSHUB_USER_TOKEN") or st.secrets.get("DAGSHUB_USER_TOKEN", None)
+dagshub_token = os.getenv("DAGSHUB_USER_TOKEN")
+
+# Safely check secrets without crashing if secrets.toml is missing
+if not dagshub_token:
+    try:
+        dagshub_token = st.secrets["DAGSHUB_USER_TOKEN"]
+    except Exception:
+        dagshub_token = None
 
 if dagshub_token:
     dagshub.auth.add_app_token(dagshub_token)
