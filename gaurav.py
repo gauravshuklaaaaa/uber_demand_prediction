@@ -213,8 +213,11 @@ if date_val and time_val:
             f"ℹ️ Nearest Timestamp Matched: **{matched_ts.strftime('%Y-%m-%d %I:%M %p')}**"
         )
 
-    # Current Driver Location Selection
-    sample = df_plot.sample(1, random_state=42).reset_index(drop=True)
+    # Dynamic Driver Location: Select driver location dynamically based on the target timestamp!
+    # Different timestamp = Different Driver location.
+    seed_value = abs(hash(str(matched_ts))) % 10000
+    sample = df_plot.sample(1, random_state=seed_value).reset_index(drop=True)
+
     curr_lat, curr_lon, curr_reg = (
         sample["pickup_latitude"].item(),
         sample["pickup_longitude"].item(),
